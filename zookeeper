@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Startup script for Main
+###export JAVA_HOME="/abserver/jdk1.7.0_08/"
+export ZOOKEEPER_HOME="/abserver/kafka_2.11-0.10.1.1"
+export ZOOKEEPER_PORT=2181
+
+function check() {
+   pid=`netstat -ntlp | grep $ZOOKEEPER_PORT | awk '{split($NF, PID, "/"); print PID[1]}'`
+   echo $pid  
+}
+
+case "$1" in
+    start)
+        # Main startup
+	if [ !  -z `check` ]; then
+          echo "Zookeeper already started at port $ZOOKEEPER_PORT, pid `check`"
+          exit 2
+        fi 
+	echo "Waiting for server to start, it will take some seconds"
+        echo -n "Starting zookeeper (port $ZOOKEEPER_PORT): "
+	exec $ZOOKEEPER_HOME/bin/zookeeper-server-start.sh -daemon $ZOOKEEPER_HOME/config/zookeeper.properties > /dev/null &  
+	while true
+        do 
+          if [ -z `check` ]; then 
+	     echo -n " . "
+             sleep 0.5
+          else 
+	    break 
+          fi 
+        done 
+        echo "OK"
+        ;;
+    stop)
+        # Main shutdown
+	pid=`check`
+        if [ -z $pid ] ; then
+          echo "Zookeeper was not started at port $ZOOKEEPER_PORT"
+          exit 2
+        fi 
+	echo "Waiting for server to stop, it will take some seconds"
+        printf "Shutdown zookeeper (port $ZOOKEEPER_PORT): "
+        kill $pid  
+	while true
+        do
+          if [ ! -z `check` ]; then
+	     echo -n " . "
+             sleep 0.5
+          else
+            break
+          fi
+        done
+        echo "OK"
+        ;;
+    reload|restart)
+        $0 stop
+        $0 start
+        ;;
+    status)
+        ;;
+    *)
+        echo "Usage: `basename $0` start|stop|restart|reload"
+        exit 1
+esac
+
+exit 0

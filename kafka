@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Startup script for Main
+###export JAVA_HOME="/abserver/jdk1.7.0_08/"
+export KAFKA_HOME="/abserver/kafka_2.11-0.10.1.1"
+export KAFKA_PORT=9092
+
+function check() {
+   pid=`netstat -ntlp | grep $KAFKA_PORT | awk '{split($NF, PID, "/"); print PID[1]}'`
+   echo $pid  
+}
+
+case "$1" in
+    start)
+        # Main startup
+	if [ !  -z `check` ]; then
+          echo "Kafka already started at port $KAFKA_PORT, pid `check`"
+          exit 2
+        fi 
+	echo "Waiting for server to start, it will take some seconds"
+        echo -n "Starting kafka (port $KAFKA_PORT): "
+	exec $KAFKA_HOME/bin/kafka-server-start.sh -daemon $KAFKA_HOME/config/server.properties > /dev/null &  
+	while true
+        do 
+          if [ -z `check` ]; then 
+	     echo -n " . "
+             sleep 0.5
+          else 
+	    break 
+          fi 
+        done 
+        echo "OK"
+        ;;
+    stop)
+        # Main shutdown
+	pid=`check`
+        if [ -z $pid ] ; then
+          echo "Kafka was not started at port $KAFKA_PORT"
+          exit 2
+        fi 
+	echo "Waiting for server to stop, it will take some seconds"
+        printf "Shutdown kafka (port $KAFKA_PORT): "
+        kill $pid  
+	while true
+        do
+          if [ ! -z `check` ]; then
+	     echo -n " . "
+             sleep 0.5
+          else
+            break
+          fi
+        done
+        echo "OK"
+        ;;
+    reload|restart)
+        $0 stop
+        $0 start
+        ;;
+    status)
+        ;;
+    *)
+        echo "Usage: `basename $0` start|stop|restart|reload"
+        exit 1
+esac
+
+exit 0
