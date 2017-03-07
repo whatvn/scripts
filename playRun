@@ -1,0 +1,285 @@
+#!/bin/bash
+COMMAND=$1
+
+# ***********************************************
+# *************  Set these variables  ***********
+NAME=chicken
+PORT=80
+APP_DIR="/srv/chicken"
+JVM_OPTS="-Xmx512m"
+
+# ***********************************************
+# ***********************************************
+
+# Additional arguments to be passed to the Play application
+APP_ARGS="-Dhttp.port=${PORT}"
+
+# Path to the RUNNING_PID file containing process ID
+PID_FILE=$APP_DIR/RUNNING_PID
+
+# Helper functions
+
+checkPidFile()
+{
+	if [ -f $PID_FILE ]
+	then
+		if ps -p `cat $PID_FILE` > /dev/null
+		then
+			# The file exists and the process is running
+			return 1
+		else
+			# The file exitsts, but the process is dead
+			return 2
+		fi
+	fi
+
+	# The file doesn't exist
+	return 0
+}
+
+echoProgress()
+{
+	setColor 6
+        printf "%-70s" "$1..."
+	resetColor
+	return 0
+}
+
+echoError()
+{
+	setColor 6
+        printf "ERROR"
+        if [ ! -z "$1" ]
+        then
+		resetColor
+                printf " [$1]"
+        fi
+        printf "\n"
+	resetColor
+	return 0
+}
+
+echoOK()
+{
+	setColor 2
+        printf "OK"
+        if [ ! -z "$1" ]
+        then
+		resetColor
+                printf " [$1]"
+        fi
+        printf "\n"
+	resetColor
+	return 0
+}
+
+checkResult()
+{
+        if [ "$1" -ne 0 ]
+        then
+                echoError "$2"
+                exit 1
+        fi
+}
+
+setColor()
+{
+        tput setaf $1 2>/dev/null
+}
+
+resetColor()
+{
+        tput sgr0 2>/dev/null
+}
+
+# Checks if RUNNING_PID file exists and whether the process is really running.
+checkAppStarted()
+{
+        # Wait a bit
+        sleep 2
+        # Check if RUNNING_PID file exists and if process is really running
+        checkPidFile
+        if [ $? != 1 ]
+        then
+                echoError
+                cat $TMP_LOG 1>&2
+                exit 1
+        fi
+        local HTTP_RESPONSE_CODE
+        COUNTER=0
+        while [ "X$HTTP_RESPONSE_CODE" == "X" ] && [ "$HTTP_RESPONSE_CODE" != "200" ] && [ $COUNTER -lt 60 ]; do
+                sleep 1
+                # Issue HTTP GET request using wget to check if the app is really started. Of course this
+                # command assumes that your server supports GET for the root URL.
+                HTTP_RESPONSE_CODE=`wget -SO- "http://localhost:$PORT/" 2>&1 | grep "HTTP/" | awk '{print $2}'`
+
+                # The same functionality but using curl. For your convenience.
+                #HTTP_RESPONSE_CODE=`curl --connect-timeout 20 --retry 3 -o /dev/null --silent --write-out "%{http_code}" http://localhost:$PORT/`
+                checkResult $? "no response from server, timeout"
+                let COUNTER+=1
+        done
+        if [ "$HTTP_RESPONSE_CODE" != "200" ]
+        then
+                echoError "HTTP GET / = $HTTP_RESPONSE_CODE"
+                exit 1
+        fi
+}
+
+# Gently kill the given process
+kill_softly()
+{
+	SAFE_CHECK=`ps $@ | grep [-]Duser.dir=$APP_DIR`
+	if [ -z "$SAFE_CHECK" ]
+	then
+		# Process ID doesn't belong to expected application! Don't kill it!
+		return 1
+	else
+		# Send termination signals one by one
+		for sig in TERM HUP INT QUIT PIPE KILL; do
+			if ! kill -$sig "$@" > /dev/null 2>&1 ;
+			then
+				break
+			fi
+			sleep 2
+		done
+	fi
+}
+
+# Get process ID from RUNNING_PID file and print it
+printPid()
+{
+	PID=`cat $PID_FILE`
+	printf "PID=$PID"
+}
+
+# Check port input argument
+checkPort()
+{
+	if [ -z "$PORT" ]
+	then
+		echoError "Port not set!"
+		return 1
+	fi
+}
+
+# Check input arguments
+checkArgs()
+{
+	# Check command
+	case "$COMMAND" in
+		start | stop | restart | status) ;;
+		*)
+			echoError "Unknown command"
+			return 1
+		;;
+	esac
+
+	# Check application name
+	if [ -z "$NAME" ]
+	then
+		echoError "Application name not set!"
+		return 1
+	fi
+
+	# Check application directory
+	if [ -z "$APP_DIR" ]
+	then
+		echoError "Application installation directory not set!"
+		return 1
+	fi
+
+	# Check port
+	case "$COMMAND" in
+		start | restart)
+			checkPort
+			if [ $? != 0 ]
+			then
+				return 1
+			fi
+		;;
+	esac
+}
+
+# Check input arguments
+checkArgs
+if [ $? != 0 ]
+then
+	echo "Usage: $0 {start|stop|status|restart}"
+	exit 1
+fi
+
+case "${COMMAND}" in
+	start)
+		echoProgress "Starting $NAME at port $PORT"
+
+		checkPidFile
+		case $? in
+			1)	echoOK "$(printPid) already started"
+				exit ;;
+			2)	# Delete the RUNNING_PID FILE			
+				rm $PID_FILE ;;		
+		esac
+
+		SCRIPT_TO_RUN=$APP_DIR/bin/$NAME
+		if [ ! -f $SCRIPT_TO_RUN ]
+		then
+			echoError "Play script doesn't exist!"
+			exit 1
+		fi
+			
+		# * * * Run the Play application * * *
+		TMP_LOG=$APP_DIR/stdout
+		#export JVM_OPTS=$JVM_OPTS
+		PID=`$SCRIPT_TO_RUN -J$JVM_OPTS $APP_ARGS > $TMP_LOG & echo $!`
+
+		# Check if successfully started
+		if [ $? != 0 ]
+		then
+			echoError
+			exit 1
+		else
+			checkAppStarted
+			echoOK "PID=$PID"
+		fi
+	;;
+	status)
+		echoProgress "Checking $NAME at port $PORT"
+		checkPidFile
+		case $? in
+			0)	echoOK "not running" ;;
+			1)	echoOK "$(printPid) running" ;;
+			2)	echoError "process dead but RUNNING_PID file exists" ;;
+		esac
+	;;
+	stop)
+		echoProgress "Stopping $NAME"
+		checkPidFile
+		case $? in
+			0)	echoOK "wasn't running" ;;
+			1)	PRINTED_PID=$(printPid)
+				kill_softly `cat $PID_FILE`
+				if [ $? != 0 ]
+				then
+					echoError "$PRINTED_PID doesn't belong to $NAME! Human intervention is required."
+					exit 1
+				else
+					echoOK "$PRINTED_PID stopped"
+				fi ;;
+			2)	echoError "RUNNING_PID exists but process is already dead" ;;
+		esac
+	;;
+
+	restart)
+		$0 stop $NAME $PORT
+		if [ $? == 0 ]
+		then
+			$0 start $NAME $PORT
+			if [ $? == 0 ]
+			then
+				# Success
+				exit
+			fi
+		fi
+		exit 1
+	;;
+esac
